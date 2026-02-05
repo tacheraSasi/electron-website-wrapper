@@ -9,8 +9,8 @@ import {
   globalShortcut,
 } from "electron";
 import path from "path";
+import fs from "fs";
 import isOnline from "is-online";
-import Store from "electron-store";
 
 // Window state store for persistence
 interface WindowState {
@@ -21,15 +21,13 @@ interface WindowState {
   isMaximized: boolean;
 }
 
-const store = new Store<{ windowState: WindowState }>({
-  defaults: {
-    windowState: {
-      width: 992,
-      height: 600,
-      isMaximized: false,
-    },
-  },
-});
+const CONFIG_FILE = path.join(app.getPath("userData"), "window-state.json");
+
+const defaultWindowState: WindowState = {
+  width: 992,
+  height: 600,
+  isMaximized: false,
+};
 
 let tray: Tray | null = null;
 let mainWindow: BrowserWindow;
@@ -38,7 +36,15 @@ const OFFLINE_URL = "offline.html";
 
 // Get saved window state
 function getWindowState(): WindowState {
-  return store.get("windowState");
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const data = fs.readFileSync(CONFIG_FILE, "utf-8");
+      return { ...defaultWindowState, ...JSON.parse(data) };
+    }
+  } catch (e) {
+    console.error("Failed to load window state:", e);
+  }
+  return defaultWindowState;
 }
 
 // Save current window state
@@ -48,13 +54,19 @@ function saveWindowState() {
   const isMaximized = mainWindow.isMaximized();
   const bounds = mainWindow.getBounds();
 
-  store.set("windowState", {
+  const state: WindowState = {
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
     isMaximized,
-  });
+  };
+
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(state, null, 2));
+  } catch (e) {
+    console.error("Failed to save window state:", e);
+  }
 }
 
 app.setName("MonkeyType Desktop");
@@ -126,6 +138,69 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
+// Register keyboard shortcuts
+function registerShortcuts() {
+  // Global shortcut to show/hide the app (Cmd/Ctrl + Shift + M)
+  globalShortcut.register("CommandOrControl+Shift+M", () => {
+    if (mainWindow.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  // In-app shortcuts using webContents
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    // Reload page: Cmd/Ctrl + R
+    if (input.key === "r" && (input.meta || input.control) && !input.shift) {
+      mainWindow.webContents.reload();
+      event.preventDefault();
+    }
+
+    // Hard reload (clear cache): Cmd/Ctrl + Shift + R
+    if (input.key === "R" && (input.meta || input.control) && input.shift) {
+      mainWindow.webContents.reloadIgnoringCache();
+      event.preventDefault();
+    }
+
+    // Toggle fullscreen: F11 or Cmd/Ctrl + Shift + F
+    if (
+      input.key === "F11" ||
+      (input.key === "f" && (input.meta || input.control) && input.shift)
+    ) {
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      event.preventDefault();
+    }
+
+    // Zoom in: Cmd/Ctrl + Plus/=
+    if (input.key === "=" && (input.meta || input.control)) {
+      const currentZoom = mainWindow.webContents.getZoomLevel();
+      mainWindow.webContents.setZoomLevel(currentZoom + 0.5);
+      event.preventDefault();
+    }
+
+    // Zoom out: Cmd/Ctrl + Minus
+    if (input.key === "-" && (input.meta || input.control)) {
+      const currentZoom = mainWindow.webContents.getZoomLevel();
+      mainWindow.webContents.setZoomLevel(currentZoom - 0.5);
+      event.preventDefault();
+    }
+
+    // Reset zoom: Cmd/Ctrl + 0
+    if (input.key === "0" && (input.meta || input.control)) {
+      mainWindow.webContents.setZoomLevel(0);
+      event.preventDefault();
+    }
+
+    // Developer tools: Cmd/Ctrl + Shift + I
+    if (input.key === "i" && (input.meta || input.control) && input.shift) {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
+}
+
 // Schedule a placeholder notification (can be removed/edited later)
 function scheduleMorningNotification() {
   if (Notification.isSupported()) {
@@ -137,9 +212,10 @@ function scheduleMorningNotification() {
 }
 
 // Electron lifecycle
-app.whenReady().then(() => {
-  createWindow();
+app.whenReady().then(async () => {
+  await createWindow();
   createTray();
+  registerShortcuts();
   scheduleMorningNotification();
 
   session.defaultSession.setPermissionRequestHandler(
@@ -167,4 +243,9 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// Unregister all shortcuts when app is about to quit
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });
