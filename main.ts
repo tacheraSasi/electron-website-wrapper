@@ -6,14 +6,56 @@ import {
   Notification,
   nativeImage,
   session,
+  globalShortcut,
 } from "electron";
 import path from "path";
 import isOnline from "is-online";
+import Store from "electron-store";
+
+// Window state store for persistence
+interface WindowState {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  isMaximized: boolean;
+}
+
+const store = new Store<{ windowState: WindowState }>({
+  defaults: {
+    windowState: {
+      width: 992,
+      height: 600,
+      isMaximized: false,
+    },
+  },
+});
 
 let tray: Tray | null = null;
 let mainWindow: BrowserWindow;
 const URL = "https://monkeytype.com/";
 const OFFLINE_URL = "offline.html";
+
+// Get saved window state
+function getWindowState(): WindowState {
+  return store.get("windowState");
+}
+
+// Save current window state
+function saveWindowState() {
+  if (!mainWindow) return;
+
+  const isMaximized = mainWindow.isMaximized();
+  const bounds = mainWindow.getBounds();
+
+  store.set("windowState", {
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    isMaximized,
+  });
+}
 
 app.setName("MonkeyType Desktop");
 
@@ -28,9 +70,13 @@ app.setAboutPanelOptions({
 
 // Create the main browser window
 async function createWindow() {
+  const windowState = getWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 992,
-    height: 600,
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       sandbox: false,
@@ -40,6 +86,16 @@ async function createWindow() {
     autoHideMenuBar: true,
     show: false,
   });
+
+  // Restore maximized state
+  if (windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  // Save window state on resize, move, and close
+  mainWindow.on("resize", saveWindowState);
+  mainWindow.on("move", saveWindowState);
+  mainWindow.on("close", saveWindowState);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
